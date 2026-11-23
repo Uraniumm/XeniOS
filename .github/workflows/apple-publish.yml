@@ -504,6 +504,7 @@ jobs:
           retention-days: 90
 
   build-macos:
+    if: false
     name: Build macOS Apple Silicon
     needs:
       - resolve-metadata
