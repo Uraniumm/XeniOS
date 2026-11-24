@@ -330,21 +330,54 @@ DECLARE_XBDM_EXPORT1(DmGetXbeInfo, kDebug, kStub);
 dword_result_t DmGetConsoleDebugMemoryStatus_entry(
     lpdword_t memory_config_ptr) {
   if (!memory_config_ptr) {
-    return X_E_INVALIDARG;
+    return XBDM_INVALIDARG;
   }
 
   const uint32_t state =
       cvars::console_debug_memory_state;
 
   if (state > DM_CONSOLEMEMCONFIG_ADDITIONALMEMENABLED) {
-    return X_E_INVALIDARG;
+    return XBDM_INVALIDARG;
   }
 
   *memory_config_ptr = state;
   return XBDM_SUCCESSFUL;
 }
 DECLARE_XBDM_EXPORT1(
-    DmGetConsoleDebugMemoryStatus, kDebug, kImplemented);
+    DmGetConsoleDebugMemoryStatus, kDebug, kStub);
+	
+dword_result_t DmGetConsoleFeatures_entry(
+    lpdword_t features_ptr) {
+  if (!features_ptr) {
+    return XBDM_INVALIDARG;
+  }
+
+  const uint32_t state =
+      cvars::console_debug_memory_state;
+
+  if (state > DM_CONSOLEMEMCONFIG_ADDITIONALMEMENABLED) {
+    return XBDM_INVALIDARG;
+  }
+
+  uint32_t features = 0;
+
+  // DEBUGGING
+  if (cvars::console_type >= 0) {
+    features |= 0x1;
+  }
+
+  // 1GB_RAM — hardware capability, not enabled state.
+  if (state != DM_CONSOLEMEMCONFIG_NOADDITIONALMEM) {
+    features |= 0x4;
+  }
+
+  // SECONDARY_NIC (0x2) deliberately not advertised.
+
+  *features_ptr = features;
+  return XBDM_SUCCESSFUL;
+}
+DECLARE_XBDM_EXPORT1(
+    DmGetConsoleFeatures, kDebug, kStub);
 
 dword_result_t DmGetSystemInfo_entry(pointer_t<XBDM_SYSTEM_INFO> info) {
   if (!info) {

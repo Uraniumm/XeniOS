@@ -30,6 +30,7 @@ static constexpr char DmXboxName[] = "XeniOSXDK";
 #define XBDM_UNKNOWNFAILURE     0x82DA002C
 #define XBDM_ENDOFLIST          0x82DA0104
 #define XBDM_BUFFER_TOO_SMALL   0x82DA0105
+#define XBDM_INVALIDARG         0x82DA0017
 
 #define MAX_NOTIFY              32
 #define DM_NOTIFYMAX            18

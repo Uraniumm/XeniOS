@@ -346,37 +346,68 @@ X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry,
   }
 
   if (entry) {
-    // XENIOS CHECKPOINT CHARLIE: raw HDD1 volume probe
-    // XEXMenu opens bare Hdd1: with FILE_NON_DIRECTORY_FILE to detect the
-    // volume.  Do not weaken the check for any ordinary directory, including
-    // Hdd1:\Content or other paths.  Only an existing exact volume root gets
-    // this compatibility exception. FileHandle::OpenExisting may still fail
-    // opening a host directory, in which case the log will show that next stage.
-    const bool hdd1_volume_probe = !root_entry &&
-        creation_disposition == FileDisposition::kOpen &&
-        (xe::utf8::equal_case(path, "Hdd1:") ||
-         xe::utf8::equal_case(path, "Hdd1:\\") ||
-         xe::utf8::equal_case(path, "\\Device\\Harddisk0\\Partition1") ||
-         xe::utf8::equal_case(path, "\\Device\\Harddisk0\\Partition1\\"));
-    if (entry->attributes() & kFileAttributeDirectory && is_non_directory &&
-        !hdd1_volume_probe) {
+    // XENIOS CHECKPOINT CHARLIE:
+    // Allow raw HDD1 volume probes without weakening normal
+    // directory validation.
+    //
+    // XEXMenu may open the volume root with FILE_NON_DIRECTORY_FILE.
+    // Identify the actual mounted device root rather than relying
+    // on path spelling, symbolic links, or root handle context.
+
+    const bool is_hdd1_root =
+        entry->parent() == nullptr &&
+        xe::utf8::equal_case(
+            entry->device()->mount_path(),
+            "\\Device\\Harddisk0\\Partition1");
+
+    const bool hdd1_volume_probe =
+        is_hdd1_root &&
+        is_non_directory &&
+        (creation_disposition == FileDisposition::kOpen ||
+         creation_disposition == FileDisposition::kOpenIf);
+
+    // Diagnostic logging for HDD1 root access.
+    if (is_hdd1_root) {
+      XELOGI(
+          "HDD1 DIAG: path='{}' disposition={} "
+          "directory={} non_directory={} "
+          "root_context={} volume_probe={}",
+          path,
+          static_cast<uint32_t>(creation_disposition),
+          is_directory,
+          is_non_directory,
+          root_entry != nullptr,
+          hdd1_volume_probe);
+    }
+
+    // Preserve normal directory semantics except for
+    // recognized HDD1 volume-root probes.
+    if ((entry->attributes() & kFileAttributeDirectory) &&
+        is_non_directory && !hdd1_volume_probe) {
       return X_STATUS_FILE_IS_A_DIRECTORY;
     }
-    if (hdd1_volume_probe && is_non_directory) {
-      XELOGI("HDD1: allowing bare volume open probe '{}'; normal dirs unchanged", path);
+
+    if (hdd1_volume_probe) {
+      XELOGI(
+          "HDD1: allowing volume-root open '{}'",
+          path);
     }
 
-    // If the entry does not exist on the host then remove the cached entry. A
-    // device mounted there has its own folder.
-    if (parent_entry && entry->device() == parent_entry->device()) {
+    // If the entry does not exist on the host then remove
+    // the cached entry. A device mounted there has its
+    // own folder.
+    if (parent_entry &&
+        entry->device() == parent_entry->device()) {
       const xe::vfs::HostPathEntry* host_path =
-          dynamic_cast<const xe::vfs::HostPathEntry*>(parent_entry);
+          dynamic_cast<const xe::vfs::HostPathEntry*>(
+              parent_entry);
 
       if (host_path) {
-        auto const file_path = host_path->host_path() / entry->name();
+        auto const file_path =
+            host_path->host_path() / entry->name();
 
         if (!std::filesystem::exists(file_path)) {
-          // Remove cached entry
+          // Remove cached entry.
           entry->Delete();
           entry = nullptr;
         }
