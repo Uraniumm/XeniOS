@@ -186,6 +186,17 @@ void HostPathDevice::PopulateEntry(
 
   auto child_infos = xe::filesystem::ListFiles(parent_entry->host_path());
   for (auto& child_info : child_infos) {
+    // XENIOS CHECKPOINT CHARLIE: treat our HDD1 Content link as a directory.
+    if (parent_entry == root_entry_.get() &&
+        mount_path() == "\\Device\\Harddisk0\\Partition1" &&
+        child_info.name == "Content") {
+      std::error_code hdd1_symlink_ec;
+      if (std::filesystem::is_directory(
+              parent_entry->host_path() / child_info.name,
+              hdd1_symlink_ec) && !hdd1_symlink_ec) {
+        child_info.type = xe::filesystem::FileInfo::Type::kDirectory;
+      }
+    }
     // Xenia bookkeeping, never part of the package the console hands out.
     if (child_info.type == xe::filesystem::FileInfo::Type::kFile &&
         child_info.name == kPackageThumbnailFileName) {

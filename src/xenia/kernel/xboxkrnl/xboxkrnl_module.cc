@@ -23,6 +23,7 @@ DEFINE_string(cl, "", "Specify additional command-line provided to guest.",
 DEFINE_bool(kernel_debug_monitor, false, "Enable debug monitor.", "Kernel");
 DEFINE_bool(kernel_cert_monitor, false, "Enable cert monitor.", "Kernel");
 DEFINE_bool(kernel_pix, false, "Enable PIX.", "Kernel");
+DECLARE_int32(console_type);
 
 namespace xe {
 namespace kernel {
@@ -198,6 +199,28 @@ XboxkrnlModule::XboxkrnlModule(Emulator* emulator, KernelState* kernel_state)
   std::memcpy(lpExLoadedCommandLine, command_line.c_str(),
               command_line.length());
 
+  // XboxKrnlBaseVersion (8 bytes)
+  uint32_t pXboxKrnlBaseVersion =
+    memory_->SystemHeapAlloc(sizeof(KernelVersion));
+
+  auto lpXboxKrnlBaseVersion =
+    memory_->TranslateVirtual(pXboxKrnlBaseVersion);
+
+  export_resolver_->SetVariableMapping(
+    "xboxkrnl.exe",
+    ordinals::XboxKrnlBaseVersion,
+    pXboxKrnlBaseVersion);
+
+  const KernelVersion base_version =
+    cvars::console_type == -1
+        ? KernelVersion(kBaseKernelBuildVersion)
+        : *kernel_state_->GetKernelVersion();
+
+  std::memcpy(
+    lpXboxKrnlBaseVersion,
+    &base_version,
+    sizeof(KernelVersion));
+	
   // XboxKrnlVersion (8b)
   // Kernel version, looks like 2b.2b.2b.2b.
   // I've only seen games check >=, so we just fake something here.

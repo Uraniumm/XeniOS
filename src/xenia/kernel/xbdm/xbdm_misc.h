@@ -19,7 +19,7 @@ namespace kernel {
 namespace xbdm {
 
 // chrispy: no idea what a real valid value is for this
-static constexpr char DmXboxName[] = "Xbox360Name";
+static constexpr char DmXboxName[] = "XeniOSXDK";
 
 // clang-format off
 

@@ -36,6 +36,13 @@ DEFINE_int32(
     console_type, -1,
     "Console Type Identifier: -1 - Retail, 0 - Development Kit, 1 - Test Kit",
     "Kernel");
+	
+DEFINE_uint32(
+    console_debug_memory_state, 0,
+    "Console debug memory configuration: "
+    "0 = none, 1 = disabled, 2 = enabled",
+    "Kernel");
+	
 UPDATE_from_int32(console_type, 2026, 11, 3, 14, 0);
 
 namespace xe {
@@ -326,11 +333,18 @@ dword_result_t DmGetConsoleDebugMemoryStatus_entry(
     return X_E_INVALIDARG;
   }
 
-  *memory_config_ptr = DM_CONSOLEMEMCONFIG_NOADDITIONALMEM;
+  const uint32_t state =
+      cvars::console_debug_memory_state;
 
+  if (state > DM_CONSOLEMEMCONFIG_ADDITIONALMEMENABLED) {
+    return X_E_INVALIDARG;
+  }
+
+  *memory_config_ptr = state;
   return XBDM_SUCCESSFUL;
 }
-DECLARE_XBDM_EXPORT1(DmGetConsoleDebugMemoryStatus, kDebug, kStub);
+DECLARE_XBDM_EXPORT1(
+    DmGetConsoleDebugMemoryStatus, kDebug, kImplemented);
 
 dword_result_t DmGetSystemInfo_entry(pointer_t<XBDM_SYSTEM_INFO> info) {
   if (!info) {

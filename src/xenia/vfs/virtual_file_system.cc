@@ -346,8 +346,24 @@ X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry,
   }
 
   if (entry) {
-    if (entry->attributes() & kFileAttributeDirectory && is_non_directory) {
+    // XENIOS CHECKPOINT CHARLIE: raw HDD1 volume probe
+    // XEXMenu opens bare Hdd1: with FILE_NON_DIRECTORY_FILE to detect the
+    // volume.  Do not weaken the check for any ordinary directory, including
+    // Hdd1:\Content or other paths.  Only an existing exact volume root gets
+    // this compatibility exception. FileHandle::OpenExisting may still fail
+    // opening a host directory, in which case the log will show that next stage.
+    const bool hdd1_volume_probe = !root_entry &&
+        creation_disposition == FileDisposition::kOpen &&
+        (xe::utf8::equal_case(path, "Hdd1:") ||
+         xe::utf8::equal_case(path, "Hdd1:\\") ||
+         xe::utf8::equal_case(path, "\\Device\\Harddisk0\\Partition1") ||
+         xe::utf8::equal_case(path, "\\Device\\Harddisk0\\Partition1\\"));
+    if (entry->attributes() & kFileAttributeDirectory && is_non_directory &&
+        !hdd1_volume_probe) {
       return X_STATUS_FILE_IS_A_DIRECTORY;
+    }
+    if (hdd1_volume_probe && is_non_directory) {
+      XELOGI("HDD1: allowing bare volume open probe '{}'; normal dirs unchanged", path);
     }
 
     // If the entry does not exist on the host then remove the cached entry. A
