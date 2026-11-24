@@ -617,6 +617,34 @@ dword_result_t DmSetDumpMode_entry(dword_t dump_mode) {
 }
 DECLARE_XBDM_EXPORT1(DmSetDumpMode, kDebug, kStub);
 
+dword_result_t DmGetDumpMode_entry(lpdword_t dump_mode_ptr) {
+  if (!dump_mode_ptr) {
+    return 0x82DA0017u;
+  }
+
+  *dump_mode_ptr = 0;
+
+  return XBDM_SUCCESSFUL;
+}
+DECLARE_XBDM_EXPORT1(DmGetDumpMode, kDebug, kStub);
+
+struct DM_DUMP_SETTINGS_RAW {
+  uint8_t data[0x108];
+};
+static_assert_size(DM_DUMP_SETTINGS_RAW, 0x108);
+
+dword_result_t DmGetDumpSettings_entry(
+    pointer_t<DM_DUMP_SETTINGS_RAW> settings_ptr) {
+  if (!settings_ptr) {
+    return 0x82DA0017u;
+  }
+
+  settings_ptr.Zero();
+
+  return XBDM_SUCCESSFUL;
+}
+DECLARE_XBDM_EXPORT1(DmGetDumpSettings, kDebug, kStub);
+
 struct X_DM_QUERY_MEMORY_STATISTICS_RESULT {
   xe::be<uint32_t> size;
   xe::be<uint32_t> total_pages;
