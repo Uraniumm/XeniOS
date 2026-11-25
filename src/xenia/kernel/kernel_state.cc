@@ -54,6 +54,7 @@ DEFINE_uint32(kernel_build_version, 17559, "Define current kernel version",
 UPDATE_from_uint32(kernel_build_version, 2026, 10, 15, 4, 1888);
 
 DECLARE_string(cl);
+DECLARE_int32(console_type);
 
 namespace xe {
 namespace kernel {
@@ -100,6 +101,9 @@ KernelState::KernelState(Emulator* emulator)
 
   InitializeKernelGuestGlobals();
   kernel_version_ = KernelVersion(cvars::kernel_build_version);
+  if (cvars::console_type >= 0) {
+    kernel_version_.qfe = 0x8000;
+  }
 
   auto hc_loc_heap = memory_->LookupHeap(strange_hardcoded_page_);
   bool fixed_alloc_worked = hc_loc_heap->AllocFixed(
@@ -114,13 +118,26 @@ KernelState::KernelState(Emulator* emulator)
 
 void KernelState::UpdateKernelVersion() {
   kernel_version_ = KernelVersion(cvars::kernel_build_version);
-  // XboxKrnlVersion, the copy titles read.
-  const auto* version_export =
-      processor_->export_resolver()->GetExportByOrdinal(
-          "xboxkrnl.exe", ordinals::XboxKrnlVersion);
+  if (cvars::console_type >= 0) {
+    kernel_version_.qfe = 0x8000;
+  }
+
+  auto* resolver = processor_->export_resolver();
+  const auto* version_export = resolver->GetExportByOrdinal(
+      "xboxkrnl.exe", ordinals::XboxKrnlVersion);
   if (version_export && version_export->variable_ptr) {
     std::memcpy(memory_->TranslateVirtual(version_export->variable_ptr),
                 &kernel_version_, sizeof(kernel_version_));
+  }
+
+  // Retail reports 1888 as its base. Dev/test kernels report current.
+  const auto* base_export = resolver->GetExportByOrdinal(
+      "xboxkrnl.exe", ordinals::XboxKrnlBaseVersion);
+  if (base_export && base_export->variable_ptr) {
+    const KernelVersion base_version =
+        cvars::console_type >= 0 ? kernel_version_ : KernelVersion(1888);
+    std::memcpy(memory_->TranslateVirtual(base_export->variable_ptr),
+                &base_version, sizeof(base_version));
   }
 }
 

@@ -17,6 +17,9 @@
 #include "xenia/kernel/xboxkrnl/xboxkrnl_memory.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
 
+DECLARE_int32(console_type);
+DECLARE_uint32(console_debug_memory_state);
+
 DEFINE_string(cl, "", "Specify additional command-line provided to guest.",
               "Kernel");
 
@@ -142,7 +145,15 @@ XboxkrnlModule::XboxkrnlModule(Emulator* emulator, KernelState* kernel_state)
   auto lpXboxHardwareInfo = memory_->TranslateVirtual(pXboxHardwareInfo);
   export_resolver_->SetVariableMapping(
       "xboxkrnl.exe", ordinals::XboxHardwareInfo, pXboxHardwareInfo);
-  xe::store_and_swap<uint32_t>(lpXboxHardwareInfo + 0, 0x20);  // flags
+  uint32_t hardware_flags = 0x20;
+  if (cvars::console_type >= 0 &&
+      (cvars::console_debug_memory_state == 1 ||
+       cvars::console_debug_memory_state == 2)) {
+    hardware_flags |= 0x00010000;  // additional RAM hardware capability
+  }
+  xe::store_and_swap<uint32_t>(lpXboxHardwareInfo + 0, hardware_flags);
+  XELOGI("XboxHardwareInfo: flags=0x{:08X}, debug memory state={}",
+         hardware_flags, cvars::console_debug_memory_state);
   xe::store_and_swap<uint8_t>(lpXboxHardwareInfo + 4, 0x06);   // cpu count
   // Remaining 11b are zeroes?
 
@@ -215,7 +226,9 @@ XboxkrnlModule::XboxkrnlModule(Emulator* emulator, KernelState* kernel_state)
       memory_->SystemHeapAlloc(sizeof(KernelVersion));
   export_resolver_->SetVariableMapping(
       "xboxkrnl.exe", ordinals::XboxKrnlBaseVersion, pXboxKrnlBaseVersion);
-  const KernelVersion base_version(kBaseKernelBuildVersion);
+  const KernelVersion base_version =
+      cvars::console_type >= 0 ? *kernel_state_->GetKernelVersion()
+                                : KernelVersion(kBaseKernelBuildVersion);
   std::memcpy(memory_->TranslateVirtual(pXboxKrnlBaseVersion), &base_version,
               sizeof(KernelVersion));
 

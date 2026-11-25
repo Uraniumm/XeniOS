@@ -15,9 +15,19 @@
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xbdm/xbdm_private.h"
+#include "xenia/kernel/xbdm/fdfx_fatx.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_memory.h"
 #include "xenia/kernel/xthread.h"
 #include "xenia/xbox.h"
+#include "xenia/vfs/devices/host_path_device.h"
+
+#include <algorithm>
+#include <cstdint>
+#include <filesystem>
+#include <memory>
+#include <span>
+#include <string>
+#include <vector>
 
 DECLARE_bool(debug);
 
@@ -26,6 +36,11 @@ DEFINE_int32(
     "Console Type Identifier: -1 - Retail, 0 - Development Kit, 1 - Test Kit",
     "Kernel");
 UPDATE_from_int32(console_type, 2026, 11, 3, 14, 0);
+
+DEFINE_uint32(
+    console_debug_memory_state, 0,
+    "Console debug memory configuration: 0 = none, 1 = disabled, 2 = enabled",
+    "Kernel");
 
 namespace xe {
 namespace kernel {
@@ -155,6 +170,108 @@ dword_result_t DmCloseLoadedModules_entry(lpdword_t walk_modules_ptr) {
 }
 DECLARE_XBDM_EXPORT1(DmCloseLoadedModules, kDebug, kStub);
 
+// Experimental FDFX: extract FATX to a read-only HostPathDevice.
+// This intentionally does not emulate an IRP block device.
+dword_result_t DmMountFdfxVolume_entry(
+    pointer_t<X_ANSI_STRING> image_path,
+    pointer_t<X_ANSI_STRING> device_path, qword_t partition_length) {
+  constexpr uint32_t kStatusInvalidParameter = 0xC000000D;
+  constexpr uint32_t kStatusNameCollision = 0xC0000035;
+  constexpr uint32_t kStatusUnsuccessful = 0xC0000001;
+  if (!image_path || !device_path) return kStatusInvalidParameter;
+
+  const std::string image_name(
+      util::TranslateAnsiString(kernel_memory(), image_path));
+  const std::string device_name(
+      util::TranslateAnsiString(kernel_memory(), device_path));
+  const uint64_t logical_length = uint64_t(partition_length);
+  XELOGI("DmMountFdfxVolume: image='{}', device='{}', length=0x{:X}",
+         image_name, device_name, logical_length);
+  if (image_name.empty() || device_name.empty() ||
+      logical_length < 0x3000 || (logical_length & 0x1ff) ||
+      logical_length > 0x10000000ull) {
+    return kStatusInvalidParameter;
+  }
+
+  auto* fs = kernel_state()->file_system();
+  if (fs->GetDevice(device_name)) {
+    XELOGW("FDFX device '{}' is already mounted", device_name);
+    return kStatusNameCollision;
+  }
+  auto* source = fs->ResolvePath(image_name);
+  if (!source || (source->attributes() & xe::vfs::kFileAttributeDirectory)) {
+    XELOGE("FDFX source not found: {}", image_name);
+    return kStatusUnsuccessful;
+  }
+
+  xe::vfs::File* raw_file = nullptr;
+  const X_STATUS open_status =
+      source->Open(xe::filesystem::FileAccess::kGenericRead, &raw_file);
+  if (open_status != X_STATUS_SUCCESS || !raw_file) {
+    XELOGE("FDFX source open failed, status 0x{:08X}", uint32_t(open_status));
+    return kStatusUnsuccessful;
+  }
+  struct FileDestroyer {
+    void operator()(xe::vfs::File* file) const {
+      if (file) file->Destroy();
+    }
+  };
+  std::unique_ptr<xe::vfs::File, FileDestroyer> file(raw_file);
+
+  const size_t image_bytes = size_t(
+      std::min<uint64_t>(source->size(), logical_length));
+  std::vector<uint8_t> image(image_bytes);
+  for (size_t offset = 0; offset < image_bytes;) {
+    const size_t chunk = std::min<size_t>(0x10000, image_bytes - offset);
+    size_t got = 0;
+    X_STATUS status = file->ReadSync(
+        std::span<uint8_t>(image.data() + offset, chunk), offset, &got);
+    if (status != X_STATUS_SUCCESS || got != chunk) {
+      XELOGE("FDFX read failed at 0x{:X}: status=0x{:08X} got={}",
+             offset, uint32_t(status), got);
+      return kStatusUnsuccessful;
+    }
+    offset += got;
+  }
+  file.reset();
+
+  std::error_code ec;
+  const auto cache = std::filesystem::temp_directory_path(ec) /
+                     "xenios_fdfx_1888" / "LauncherData";
+  if (ec) {
+    XELOGE("FDFX temp directory unavailable: {}", ec.message());
+    return kStatusUnsuccessful;
+  }
+  // Do not overwrite an active mount; checked above.
+  std::filesystem::remove_all(cache, ec);
+  if (ec) {
+    XELOGE("FDFX cache cleanup failed: {}", ec.message());
+    return kStatusUnsuccessful;
+  }
+  fdfx::ExtractResult result;
+  fdfx::FatxExtractor extractor(image, logical_length, cache);
+  if (!extractor.Extract(&result)) {
+    XELOGE("FDFX FATX extraction failed: {}", result.error);
+    return kStatusUnsuccessful;
+  }
+  XELOGI("FDFX extracted {} files, {} dirs, {} bytes", result.files,
+         result.directories, result.extracted_bytes);
+
+  auto device = std::make_unique<xe::vfs::HostPathDevice>(
+      device_name, cache, true, false, "FATX");
+  if (!device->Initialize()) {
+    XELOGE("FDFX HostPathDevice initialization failed");
+    return kStatusUnsuccessful;
+  }
+  if (!fs->RegisterDevice(std::move(device))) {
+    XELOGE("FDFX RegisterDevice failed");
+    return kStatusUnsuccessful;
+  }
+  XELOGI("FDFX mounted {} -> {}", image_name, device_name);
+  return 0;  // Native DmMountFdfxVolume returns NTSTATUS, not XBDM_SUCCESSFUL.
+}
+DECLARE_XBDM_EXPORT1(DmMountFdfxVolume, kDebug, kImplemented);
+
 dword_result_t DmMapDevkitDrive_entry(const ppc_context_t& ctx) {
   return kernel_state()->emulator()->MountDevkitDrive() ? 0 : XBDM_UNSUCCESSFUL;
 }
@@ -188,14 +305,53 @@ DECLARE_XBDM_EXPORT1(DmGetXbeInfo, kDebug, kStub);
 dword_result_t DmGetConsoleDebugMemoryStatus_entry(
     lpdword_t memory_config_ptr) {
   if (!memory_config_ptr) {
-    return X_E_INVALIDARG;
+    return XBDM_INVALIDARG;
   }
 
-  *memory_config_ptr = DM_CONSOLEMEMCONFIG_NOADDITIONALMEM;
+  const uint32_t state =
+      cvars::console_debug_memory_state;
 
+  if (state > DM_CONSOLEMEMCONFIG_ADDITIONALMEMENABLED) {
+    return XBDM_INVALIDARG;
+  }
+
+  *memory_config_ptr = state;
   return XBDM_SUCCESSFUL;
 }
-DECLARE_XBDM_EXPORT1(DmGetConsoleDebugMemoryStatus, kDebug, kStub);
+DECLARE_XBDM_EXPORT1(
+    DmGetConsoleDebugMemoryStatus, kDebug, kStub);
+dword_result_t DmGetConsoleFeatures_entry(
+    lpdword_t features_ptr) {
+  if (!features_ptr) {
+    return XBDM_INVALIDARG;
+  }
+
+  const uint32_t state =
+      cvars::console_debug_memory_state;
+
+  if (state > DM_CONSOLEMEMCONFIG_ADDITIONALMEMENABLED) {
+    return XBDM_INVALIDARG;
+  }
+
+  uint32_t features = 0;
+
+  // DEBUGGING
+  if (cvars::console_type >= 0) {
+    features |= 0x1;
+  }
+
+  // 1GB_RAM — hardware capability, not enabled state.
+  if (state != DM_CONSOLEMEMCONFIG_NOADDITIONALMEM) {
+    features |= 0x4;
+  }
+
+  // SECONDARY_NIC (0x2) deliberately not advertised.
+
+  *features_ptr = features;
+  return XBDM_SUCCESSFUL;
+}
+DECLARE_XBDM_EXPORT1(
+    DmGetConsoleFeatures, kDebug, kStub);
 
 dword_result_t DmGetSystemInfo_entry(pointer_t<XBDM_SYSTEM_INFO> info) {
   if (!info) {
@@ -204,10 +360,13 @@ dword_result_t DmGetSystemInfo_entry(pointer_t<XBDM_SYSTEM_INFO> info) {
 
   info->base_kernel_version.major = info->kernel_version.major = 2;
   info->base_kernel_version.minor = info->kernel_version.minor = 0;
-  info->base_kernel_version.qfe = info->kernel_version.qfe = 0;
-
-  info->base_kernel_version.build = kBaseKernelBuildVersion;
-  info->kernel_version.build = kernel_state()->GetKernelVersion()->build;
+  const KernelVersion* current = kernel_state()->GetKernelVersion();
+  const bool development = cvars::console_type >= 0;
+  info->base_kernel_version.qfe = development ? current->qfe : 0;
+  info->kernel_version.qfe = current->qfe;
+  info->base_kernel_version.build =
+      development ? current->build : kBaseKernelBuildVersion;
+  info->kernel_version.build = current->build;
   // The rest was left as the caller had it. The Silverlight CLR (xcoreclr.dll
   // 0x84F0B55C) tests flags bit 0x02000000 and only uses its code cache
   // modules, through XexReserveCodeBuffer, when it is clear; a devkit's real
@@ -474,6 +633,35 @@ dword_result_t DmSetDumpMode_entry(dword_t dump_mode) {
   return XBDM_SUCCESSFUL;
 }
 DECLARE_XBDM_EXPORT1(DmSetDumpMode, kDebug, kStub);
+
+dword_result_t DmGetDumpMode_entry(lpdword_t dump_mode_ptr) {
+  if (!dump_mode_ptr) {
+    return 0x82DA0017u;
+  }
+
+  *dump_mode_ptr = 0;
+
+  return XBDM_SUCCESSFUL;
+}
+DECLARE_XBDM_EXPORT1(DmGetDumpMode, kDebug, kStub);
+
+struct DM_DUMP_SETTINGS_RAW {
+  uint8_t data[0x108];
+};
+static_assert_size(DM_DUMP_SETTINGS_RAW, 0x108);
+
+dword_result_t DmGetDumpSettings_entry(
+    pointer_t<DM_DUMP_SETTINGS_RAW> settings_ptr) {
+  if (!settings_ptr) {
+    return 0x82DA0017u;
+  }
+
+  settings_ptr.Zero();
+
+  return XBDM_SUCCESSFUL;
+}
+DECLARE_XBDM_EXPORT1(DmGetDumpSettings, kDebug, kStub);
+
 
 struct X_DM_QUERY_MEMORY_STATISTICS_RESULT {
   xe::be<uint32_t> size;
