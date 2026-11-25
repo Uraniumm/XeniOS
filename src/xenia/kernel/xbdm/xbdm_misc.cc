@@ -362,11 +362,18 @@ dword_result_t DmGetSystemInfo_entry(pointer_t<XBDM_SYSTEM_INFO> info) {
   info->base_kernel_version.minor = info->kernel_version.minor = 0;
   const KernelVersion* current = kernel_state()->GetKernelVersion();
   const bool development = cvars::console_type >= 0;
-  info->base_kernel_version.qfe = development ? current->qfe : 0;
-  info->kernel_version.qfe = current->qfe;
-  info->base_kernel_version.build =
-      development ? current->build : kBaseKernelBuildVersion;
-  info->kernel_version.build = current->build;
+  
+info->base_kernel_version.qfe =
+    development ? static_cast<uint16_t>(current->qfe) : uint16_t(0);
+
+info->kernel_version.qfe = current->qfe;
+
+info->base_kernel_version.build =
+    development ? static_cast<uint16_t>(current->build)
+                : static_cast<uint16_t>(kBaseKernelBuildVersion);
+
+info->kernel_version.build = current->build;
+
   // The rest was left as the caller had it. The Silverlight CLR (xcoreclr.dll
   // 0x84F0B55C) tests flags bit 0x02000000 and only uses its code cache
   // modules, through XexReserveCodeBuffer, when it is clear; a devkit's real
