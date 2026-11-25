@@ -24,6 +24,7 @@ DEFINE_bool(kernel_debug_monitor, false, "Enable debug monitor.", "Kernel");
 DEFINE_bool(kernel_cert_monitor, false, "Enable cert monitor.", "Kernel");
 DEFINE_bool(kernel_pix, false, "Enable PIX.", "Kernel");
 DECLARE_int32(console_type);
+DECLARE_uint32(console_debug_memory_state);
 
 namespace xe {
 namespace kernel {
@@ -143,7 +144,23 @@ XboxkrnlModule::XboxkrnlModule(Emulator* emulator, KernelState* kernel_state)
   auto lpXboxHardwareInfo = memory_->TranslateVirtual(pXboxHardwareInfo);
   export_resolver_->SetVariableMapping(
       "xboxkrnl.exe", ordinals::XboxHardwareInfo, pXboxHardwareInfo);
-  xe::store_and_swap<uint32_t>(lpXboxHardwareInfo + 0, 0x20);  // flags
+  
+  uint32_t hardware_flags = 0x00000020;
+
+  if (cvars::console_type >= 0 &&
+      cvars::console_debug_memory_state >= 1 &&
+      cvars::console_debug_memory_state <= 2) {
+    hardware_flags |= 0x00010000;
+  }
+
+  xe::store_and_swap<uint32_t>(
+      lpXboxHardwareInfo + 0, hardware_flags);
+
+  XELOGI(
+      "XboxHardwareInfo: flags=0x{:08X}, "
+      "debug memory state={}",
+      hardware_flags,
+      cvars::console_debug_memory_state);
   xe::store_and_swap<uint8_t>(lpXboxHardwareInfo + 4, 0x06);   // cpu count
   // Remaining 11b are zeroes?
 
