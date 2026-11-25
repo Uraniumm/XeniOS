@@ -67,19 +67,49 @@ uint32_t xeXamEnumerate(uint32_t handle, uint32_t flags, lpvoid_t buffer_ptr,
   }
 }
 
-dword_result_t XamEnumerate_entry(dword_t handle, dword_t flags,
-                                  lpvoid_t buffer, dword_t buffer_length,
-                                  lpdword_t items_returned,
-                                  pointer_t<XAM_OVERLAPPED> overlapped) {
+dword_result_t XamEnumerate_entry(
+    dword_t handle, dword_t flags,
+    lpvoid_t buffer, dword_t buffer_length,
+    lpdword_t items_returned,
+    pointer_t<XAM_OVERLAPPED> overlapped) {
   uint32_t dummy = 0;
-  // The console's XamEnumerate sets the top bit of the flags it passes on, so
-  // a title enumerating content aggregated for title 0 gets every title's.
+
+  // The console's XamEnumerate sets the top bit of the flags it
+  // passes on, so a title enumerating content aggregated for
+  // title 0 gets every title's.
+
+  // EXPERIMENTAL: XShell 17489 aggregate enumeration.
+  //
+  // XShell requests one 0x200-byte content record but passes 1
+  // as XamEnumerate's fourth argument. XeniOS currently treats
+  // this as a byte count.
+
+  uint32_t effective_buffer_length = buffer_length;
+
+  if (kernel_state()->title_id() == 0xFFFE07FF &&
+      uint32_t(flags) == 0x61E &&
+      uint32_t(buffer_length) == 1) {
+    effective_buffer_length = sizeof(XCONTENT_DATA_INTERNAL);
+
+    XELOGI(
+        "XSHELL AGG COMPAT: length 1 -> 0x{:X}",
+        effective_buffer_length);
+  }
+
   auto result = xeXamEnumerate(
-      handle, flags | ContentAggregateEnumerator::kAllTitlesFlag, buffer,
-      buffer_length, !overlapped ? &dummy : nullptr, overlapped);
+      handle,
+      flags | ContentAggregateEnumerator::kAllTitlesFlag,
+      buffer,
+      effective_buffer_length,
+      !overlapped ? &dummy : nullptr,
+      overlapped);
+
+  // Preserve the original behavior: report the number of
+  // records actually returned to the guest.
   if (!overlapped && items_returned) {
     *items_returned = dummy;
   }
+
   return result;
 }
 DECLARE_XAM_EXPORT1(XamEnumerate, kNone, kImplemented);
