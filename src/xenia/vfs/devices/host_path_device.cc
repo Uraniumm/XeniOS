@@ -69,17 +69,22 @@ Entry* HostPathDevice::ResolvePath(const std::string_view path) {
 namespace {
 
 // Content-type folders are named with an 8-digit hex value (e.g. 00000001).
-bool IsContentTypeName(const std::string& name) {
-  if (name.size() != 8) {
+bool IsHexName(const std::string& name, size_t length) {
+  if (name.size() != length) {
     return false;
   }
+
   for (char c : name) {
-    const bool hex = (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') ||
-                     (c >= 'a' && c <= 'f');
+    const bool hex =
+        (c >= '0' && c <= '9') ||
+        (c >= 'A' && c <= 'F') ||
+        (c >= 'a' && c <= 'f');
+
     if (!hex) {
       return false;
     }
   }
+
   return true;
 }
 
@@ -193,11 +198,31 @@ void HostPathDevice::PopulateEntry(
 
   auto child_infos = xe::filesystem::ListFiles(parent_entry->host_path());
   for (auto& child_info : child_infos) {
+    // The host Content symlink is a directory even if ListFiles sees a link.
+    if (parent_entry == root_entry_.get() &&
+        mount_path() == "\\Device\\Harddisk0\\Partition1" &&
+        child_info.name == "Content") {
+      std::error_code link_ec;
+      if (std::filesystem::is_directory(
+              parent_entry->host_path() / child_info.name, link_ec) &&
+          !link_ec) {
+        child_info.type = xe::filesystem::FileInfo::Type::kDirectory;
+      }
+    }
     // Xenia bookkeeping, never part of the package the console hands out.
     if (child_info.type == xe::filesystem::FileInfo::Type::kFile &&
         child_info.name == kPackageThumbnailFileName) {
       continue;
     }
+
+    // Title IDs and content types are both eight hex digits. Require the
+    // complete Content/<XUID>/<title>/<type> hierarchy before collapsing.
+    const Entry* title_dir = parent_entry->parent();
+    const Entry* user_dir = title_dir ? title_dir->parent() : nullptr;
+    const bool is_content_type_directory =
+        IsHexName(parent_entry->name(), 8) && title_dir &&
+        IsHexName(title_dir->name(), 8) && user_dir &&
+        IsHexName(user_dir->name(), 16);
 
     // On the content partition, present a single-file package (a directory
     // under a content-type folder holding one payload file) as that file, the
@@ -205,7 +230,7 @@ void HostPathDevice::PopulateEntry(
     // sees the save instead of an empty directory.
     if (collapse_content_packages_ &&
         child_info.type == xe::filesystem::FileInfo::Type::kDirectory &&
-        IsContentTypeName(parent_entry->name())) {
+        is_content_type_directory) {
       const auto package_dir = parent_entry->host_path() / child_info.name;
       xe::filesystem::FileInfo payload;
       if (ResolveSinglePackagePayload(package_dir, payload)) {

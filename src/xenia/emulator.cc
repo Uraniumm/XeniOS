@@ -1990,6 +1990,18 @@ bool Emulator::MountDevkitDrive() {
   file_system_->RegisterDevice(std::move(devkit_device));
   file_system_->RegisterSymbolicLink("DEVKIT:", "\\DEVKIT");
   file_system_->RegisterSymbolicLink("e:", "\\DEVKIT");
+  // XShell also addresses development files through the HDD partition path.
+  constexpr std::string_view kHddDevkit =
+      "\\Device\\Harddisk0\\Partition1\\DEVKIT";
+  if (!file_system_->GetDevice(kHddDevkit)) {
+    auto hdd_devkit = std::make_unique<vfs::HostPathDevice>(
+        kHddDevkit, storage_root_ / "devkit", false);
+    if (hdd_devkit->Initialize()) {
+      file_system_->RegisterDevice(std::move(hdd_devkit));
+    } else {
+      XELOGW("Unable to mount HDD1 DEVKIT path");
+    }
+  }
   return true;
 }
 
@@ -2811,6 +2823,102 @@ X_STATUS Emulator::PrepareLaunch(const std::filesystem::path& path,
     input_system_->ResetKeystrokes();
   }
 
+  // XENIOS CHECKPOINT CHARLIE: persistent HDD1
+  // A single host-backed partition survives guest title changes because the
+  // storage directory stays on the host.  Guest mount objects may be rebuilt.
+  // Do NOT copy or relocate existing XAM Content packages: use a directory
+  // symlink to the exact content_root_ already used by ContentManager.
+  {
+    constexpr std::string_view kHdd1Device =
+        "\\Device\\Harddisk0\\Partition1";
+    const auto hdd1_root = storage_root_ / "hdd1";
+    const auto hdd1_content = hdd1_root / "Content";
+    std::error_code hdd1_ec;
+    bool content_is_shared = false;
+
+    std::filesystem::create_directories(hdd1_root, hdd1_ec);
+    if (!hdd1_ec) {
+      std::filesystem::create_directories(content_root_, hdd1_ec);
+    }
+    if (!hdd1_ec) {
+      // If Content already *is* the configured host directory, no link is
+      // necessary.  If it points there already, preserve the existing link.
+      std::error_code equivalent_ec;
+      content_is_shared = std::filesystem::equivalent(
+          hdd1_content, content_root_, equivalent_ec);
+      if (!content_is_shared) {
+        std::error_code type_ec;
+        const auto link_status =
+            std::filesystem::symlink_status(hdd1_content, type_ec);
+        if (type_ec == std::errc::no_such_file_or_directory) {
+          type_ec.clear();
+        }
+        if (!type_ec) {
+          if (std::filesystem::is_directory(link_status) &&
+              std::filesystem::is_empty(hdd1_content, type_ec) &&
+              !type_ec) {
+            // Remove ONLY the empty placeholder from the old HDD1 experiment.
+            std::filesystem::remove(hdd1_content, type_ec);
+          }
+          if (!type_ec) {
+            const auto post_status =
+                std::filesystem::symlink_status(hdd1_content, type_ec);
+            if (type_ec == std::errc::no_such_file_or_directory) {
+              type_ec.clear();
+            }
+            if (!type_ec && !std::filesystem::exists(post_status) &&
+                !std::filesystem::is_symlink(post_status)) {
+              const auto target =
+                  std::filesystem::absolute(content_root_, type_ec);
+              if (!type_ec) {
+                std::filesystem::create_directory_symlink(
+                    target, hdd1_content, type_ec);
+                content_is_shared = !type_ec;
+              }
+            }
+          }
+        }
+        if (!content_is_shared) {
+          XELOGW(
+              "HDD1: Content is not linked to the XAM content store; "
+              "existing nonempty directories will not be replaced. "
+              "Filesystem error: {}",
+              type_ec.message());
+        }
+      }
+    }
+
+    if (hdd1_ec) {
+      XELOGW("HDD1: unable to prepare persistent storage: {}",
+             hdd1_ec.message());
+    } else {
+      // The original deeper Content mount remains in place and continues to
+      // provide the package collapsing used by XAM/other guest code.  Enable
+      // collapsing on this parent too so handle-relative browsing of Content
+      // sees the same package filenames.
+      if (!file_system_->GetDevice(kHdd1Device)) {
+        auto hdd1_device = std::make_unique<vfs::HostPathDevice>(
+            kHdd1Device, hdd1_root, false, true, "HDD1");
+        if (hdd1_device->Initialize()) {
+          file_system_->RegisterDevice(std::move(hdd1_device));
+        } else {
+          XELOGW("HDD1: root HostPathDevice initialization failed");
+        }
+      }
+      if (file_system_->GetDevice(kHdd1Device)) {
+        if (!file_system_->IsSymbolicLinkRegistered("Hdd1:")) {
+          file_system_->RegisterSymbolicLink("Hdd1:", kHdd1Device);
+        }
+        XELOGI("HDD1: persistent root registered; Content shared={}",
+               content_is_shared);
+        XELOGI("HDD1: probe root={}, content={}, package path={}",
+               file_system_->ResolvePath("Hdd1:") != nullptr,
+               file_system_->ResolvePath("Hdd1:\\Content") != nullptr,
+               file_system_->ResolvePath(
+                   "\\Device\\Harddisk0\\Partition1\\Content") != nullptr);
+      }
+    }
+  }
   // Expose the HDD content partition. Games that resolve saves/DLC to a raw
   // \Device\Harddisk0\Partition1\Content path via XamContentResolve open it
   // directly, not through the save:/dlc: symlinks. Without this the open lands

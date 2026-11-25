@@ -356,7 +356,17 @@ X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry,
   }
 
   if (entry) {
-    if (entry->attributes() & kFileAttributeDirectory && is_non_directory) {
+    // XEXMenu probes Hdd1: as a non-directory file. The partition root is
+    // still a directory for normal opens; only waive the type check for
+    // OPEN/OPEN_IF against this exact mounted device root.
+    const bool hdd1_volume_probe =
+        entry->parent() == nullptr && is_non_directory &&
+        xe::utf8::equal_case(entry->device()->mount_path(),
+                             "\\Device\\Harddisk0\\Partition1") &&
+        (creation_disposition == FileDisposition::kOpen ||
+         creation_disposition == FileDisposition::kOpenIf);
+    if ((entry->attributes() & kFileAttributeDirectory) &&
+        is_non_directory && !hdd1_volume_probe) {
       return X_STATUS_FILE_IS_A_DIRECTORY;
     }
 
