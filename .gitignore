@@ -49,6 +49,7 @@ tmtags
 *.suo
 bin/
 obj/
+*.before-*
 
 # VSCode
 .vscode
