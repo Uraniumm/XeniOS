@@ -25,6 +25,7 @@
 #include "xenia/base/cvar.h"
 #include "xenia/base/debugging.h"
 #include "xenia/base/exception_handler.h"
+#include "xenia/base/filesystem.h"
 #include "xenia/base/literals.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/mapped_memory.h"
@@ -878,7 +879,55 @@ X_STATUS Emulator::LaunchXexFile(const std::filesystem::path& path) {
   // and then get that symlinked to game:\, so
   // -> game:\foo.xex
   // Get just the filename (foo.xex).
-  auto file_name = path.filename();
+  // XENIOS EXPERIMENT: dashboard.xbx startup
+  // Devkit/testkit consoles may select their default title through the
+  // 256-byte ASCII dashboard.xbx in the flash directory.
+  // We currently support an executable directly under \\Device\\Flash\\,
+  // which is what the supplied 1888 and 17489 samples use.
+  std::filesystem::path selected_path = path;
+  if (cvars::console_type >= 0 &&
+    relaunch_requests_.load(std::memory_order_relaxed) == 0 &&
+    xe::utf8::equal_case(xe::path_to_utf8(path.filename()), "dash.xex")) {
+    const auto xbx = xe::filesystem::FindChildIgnoringCase(
+        path.parent_path(), "dashboard.xbx");
+    if (!xbx.empty()) {
+      const auto bytes = xe::filesystem::ReadAllBytes(xbx);
+      if (bytes.size() == 256) {
+        const auto end = std::find(bytes.begin(), bytes.end(), uint8_t{0});
+        if (end != bytes.begin() && end != bytes.end()) {
+          const std::string nt_path(bytes.begin(), end);
+          constexpr std::string_view kFlashPrefix = "\\Device\\Flash\\";
+          if (xe::utf8::starts_with_case(nt_path, kFlashPrefix)) {
+            const std::string name = nt_path.substr(kFlashPrefix.size());
+            // Experimental scope: allow only a basename, never traversal.
+            if (!name.empty() && name != "." && name != ".." &&
+                name.find_first_of("\\/:") == std::string::npos) {
+              const auto candidate = xe::filesystem::FindChildIgnoringCase(
+                  path.parent_path(), name);
+              if (!candidate.empty() &&
+                  std::filesystem::is_regular_file(candidate)) {
+                selected_path = candidate;
+                XELOGI("dashboard.xbx: selected '{}'", nt_path);
+              } else {
+                XELOGW("dashboard.xbx: '{}' missing; using dash.xex", nt_path);
+              }
+            } else {
+              XELOGW("dashboard.xbx: unsafe/unsupported path '{}'; using dash.xex",
+                     nt_path);
+            }
+          } else {
+            XELOGW("dashboard.xbx: unsupported NT path '{}'; using dash.xex",
+                   nt_path);
+          }
+        } else {
+          XELOGW("dashboard.xbx: no usable NUL-terminated path");
+        }
+      } else {
+        XELOGW("dashboard.xbx: expected 256 bytes, got {}", bytes.size());
+      }
+    }
+  }
+  auto file_name = selected_path.filename();
 
   // Launch the game.
   auto fs_path = fmt::format("{}\\", kDefaultGameSymbolicLink) +
@@ -893,7 +942,7 @@ X_STATUS Emulator::LaunchXexFile(const std::filesystem::path& path) {
            fmt::format("{}\\$flash_xam.xex", kDefaultGameSymbolicLink)))) {
     file_system_->RegisterSymbolicLink("\\SystemRoot", package_root);
   }
-  X_STATUS result = CompleteLaunch(path, fs_path);
+  X_STATUS result = CompleteLaunch(selected_path, fs_path);
 
   if (XFAILED(result)) {
     return result;
